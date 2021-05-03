@@ -4,6 +4,10 @@ A toolkit for leaflet-based membrane analysis
 """
 
 # Add imports here
+from .data import (LIPID_HEADGROUPS,
+                   LIPID_CLASSES,
+                   LIPID_NUM_UNSATURATIONS,
+                   LIPID_SATURATIONS)
 from .leafletfinder.leafletfinder import LeafletFinder
 from .analysis import AreaPerLipid, LipidEnrichment, LipidFlipFlop
 

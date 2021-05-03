@@ -1,0 +1,35 @@
+general:
+  CE: CER
+  DG: DAG
+  GG: DGDG
+  G1: GM1
+  G3: GM3
+  GS: GS
+  MG: MGDG
+  PA: PA
+  PC: PC
+  PE: PE
+  PG: PG
+  PI: PI
+  P1: PIP1
+  P2: PIP2
+  P3: PIP3
+  PS: PS
+  SM: SM
+  SG: SQDG
+
+lipids:
+  CHOL: CHOL
+  
+  APC: LPC
+  CPC: LPC
+  IPC: LPC
+  LPC: LPC
+  OPC: LPC
+  PPC: LPC
+  TPC: LPC
+  UPC: LPC
+  VPC: LPC
+
+  IPE: LPE
+  PPE: LPE
