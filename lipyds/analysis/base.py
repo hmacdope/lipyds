@@ -99,6 +99,8 @@ class LeafletAnalysisBase(AnalysisBase):
         self.residues = self.selection.residues
         self.n_residues = len(self.residues)
         self.ids = getattr(self.residues, group_by_attr)
+        self.unique_ids = np.unique(self.ids)
+        self.n_unique_ids = len(self.unique_ids)
 
         # get mapping dicts
         self._resindex_to_analysis_order = {}

@@ -7,7 +7,7 @@ def get_lipid_heads_and_tails():
     head_file = resource_filename(__name__, "headgroups.yml")
     with open(head_file) as file:
         heads = yaml.load(file, Loader=yaml.FullLoader)
-    tail_file = resource_filename(__name__, "n_saturations.yml")
+    tail_file = resource_filename(__name__, "n_unsaturations.yml")
     with open(tail_file) as file:
         tails = yaml.load(file, Loader=yaml.FullLoader)
     

@@ -25,8 +25,9 @@ def guess_lipid_info(universe: Universe,
                   lipid_saturations=lipid_saturations)
 
     resnames = universe.residues.resnames
-    for attrname, default in defaults.values():
-        guesses = [values.get(name, default) for name in resnames]
+
+    for attrname, default in defaults.items():
+        guesses = [values[attrname].get(name, default) for name in resnames]
         if not hasattr(universe, attrname):
             universe.add_TopologyAttr(attrname)
         setattr(universe.residues, attrname, guesses)
