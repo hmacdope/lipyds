@@ -76,9 +76,9 @@ if __name__ == "__main__":
 
     install_requires = [
             'cython',
-            'numpy>=1.16.0',
+            'numpy>=1.20.0',
             'mdanalysis>=1.0.0',
-            'mdanalysistests>=1.0.0',
+            # 'mdanalysistests>=1.0.0',
         ]
 
     setup(
