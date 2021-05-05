@@ -36,35 +36,47 @@ class ContactFraction(LeafletAnalysisBase):
         self.residue_contact_counts = np.zeros(shape2, dtype=int)
         self.residue_counts = np.zeros(shape2, dtype=int)
         self.total_lipid_counts = np.zeros((self.n_leaflets, self.n_frames), dtype=int)
-        self.timewise_cfraction = np.ones(shape)
+        self.timewise_cfraction = np.empty(shape)
+        self.timewise_cfraction[:] = np.nan
 
     def _single_frame(self):
         fr_i = self._frame_index
         for lf_i in range(self.n_leaflets):
             ag = self.leaflet_atomgroups[lf_i]
-            coords = get_centers_by_residue(ag)
-            ag_ids = getattr(ag.residues, self.group_by_attr)
-            a, b = distances.capped_distance(coords, coords,
+            # coords = get_centers_by_residue(ag)
+            ag_ids = getattr(ag, self.group_by_attr)
+            ag_resix = ag.resindices
+            a, b = distances.capped_distance(ag.positions, ag.positions,
                                              self.cutoff,
                                              box=self.get_box(),
                                              return_distances=False).T
             not_self = a != b
             a = a[not_self]
             b = b[not_self]
-            self.total_lipid_counts[lf_i, fr_i] = len(ag_ids)
+
+            not_same_res = []
+            seen = set()
+            for res_a, res_b in zip(ag_resix[a], ag_resix[b]):
+                pair = (res_a, res_b)
+                not_same_res.append(pair not in seen)
+                seen.add(pair)
+            
+            a = a[not_same_res]
+            b = b[not_same_res]
+            self.total_lipid_counts[lf_i, fr_i] = len(ag.residues)
             res_res_row = self.residue_residue_contact_counts[lf_i]
             for id_i, resid in enumerate(self.unique_ids):
                 a_neighbors = ag_ids[a] == resid
-                n_contacts = len(set(ag.residues.resindices[b][a_neighbors]))
+                n_contacts = len(set(ag.resindices[b][a_neighbors]))
                 self.residue_contact_counts[lf_i, id_i, fr_i] = n_contacts
                 self.residue_counts[lf_i, id_i, fr_i] = n_res = sum(ag_ids == resid)
-                if not n_res:
+                if not n_res or not n_contacts:
                     continue
                 
                 for id_j, resid2 in enumerate(self.unique_ids):
                     b_neighbors = ag_ids[b] == resid2
                     b_neighboring_a = a_neighbors & b_neighbors
-                    unique_b_neighbors = set(ag.residues.resindices[b][b_neighboring_a])
+                    unique_b_neighbors = set(ag.resindices[b][b_neighboring_a])
                     res_res_row[id_i, id_j, fr_i] = len(unique_b_neighbors)
 
                     local_ratio = len(unique_b_neighbors) / n_contacts
@@ -88,8 +100,9 @@ class ContactFraction(LeafletAnalysisBase):
                 for j in range(self.n_unique_ids):
                     local_ratio = specific[i, j] / contacts[j]
                     global_ratio = residues[i] / leaflet
+                    if global_ratio:
 
-                    self.contact_fraction_by_leaflet[lf_i, i, j] = local_ratio/global_ratio
+                        self.contact_fraction_by_leaflet[lf_i, i, j] = local_ratio/global_ratio
 
 
     def collate_as_dataframe(self, ids=None):
@@ -138,16 +151,21 @@ class ContactFraction(LeafletAnalysisBase):
                               '`conda install pandas` or '
                               '`pip install pandas`.') from None
 
-        means = self.timewise_cfraction.mean(axis=-1)
+        means = np.nanmean(self.timewise_cfraction, axis=-1)
         dfs = [pd.DataFrame(d, columns=self.unique_ids)
                for d in means]
         for df in dfs:
             df["Y"] = self.unique_ids
         
         if ids is not None:
-            ids = list(ids) + ["Y"]
+            ids = list(ids)
             dfs = [df[df.Y.isin(ids)] for df in dfs]
-            dfs = [df[ids] for df in dfs]
+            rows = []
+            for df in dfs:
+                df = df.set_index("Y")
+                df = df.reindex(ids)
+                rows.append(df)
+            dfs = [df[ids] for df in rows]
         for i, df in enumerate(dfs, 1):
             df['Leaflet'] = i
         df = pd.concat(dfs)
@@ -164,15 +182,16 @@ class SymmetricContactFraction(ContactFraction):
         self.residue_contact_counts = np.zeros((self.n_leaflets, self.n_frames), dtype=int)
         self.residue_counts = np.zeros(shape2, dtype=int)
         self.total_lipid_counts = np.zeros((self.n_leaflets, self.n_frames), dtype=int)
-        self.timewise_cfraction = np.ones(shape)
+        self.timewise_cfraction = np.empty(shape)
+        self.timewise_cfraction[:] = np.nan
 
     def _single_frame(self):
         fr_i = self._frame_index
         for lf_i in range(self.n_leaflets):
             ag = self.leaflet_atomgroups[lf_i]
-            coords = get_centers_by_residue(ag)
-            ag_ids = getattr(ag.residues, self.group_by_attr)
-            a, b = distances.capped_distance(coords, coords,
+            ag_ids = getattr(ag, self.group_by_attr)
+            ag_resix = ag.resindices
+            a, b = distances.capped_distance(ag.positions, ag.positions,
                                              self.cutoff,
                                              box=self.get_box(),
                                              return_distances=False).T
@@ -180,7 +199,17 @@ class SymmetricContactFraction(ContactFraction):
             a = a[not_self]
             b = b[not_self]
 
-            self.total_lipid_counts[lf_i, fr_i] = n_tot = len(ag_ids)
+            not_same_res = []
+            seen = set()
+            for res_a, res_b in zip(ag_resix[a], ag_resix[b]):
+                pair = (res_a, res_b)
+                not_same_res.append(pair not in seen)
+                seen.add(pair)
+            
+            a = a[not_same_res]
+            b = b[not_same_res]
+
+            self.total_lipid_counts[lf_i, fr_i] = n_tot = len(ag.residues)
             self.residue_contact_counts[lf_i, fr_i] = n_contacts = len(a)
 
             res_res_row = self.residue_residue_contact_counts[lf_i]
@@ -188,22 +217,20 @@ class SymmetricContactFraction(ContactFraction):
                 a_neighbors = ag_ids[a] == resid
                 
                 self.residue_counts[lf_i, id_i, fr_i] = n_res = sum(ag_ids == resid)
-                if not n_res:
+                if not n_res or not n_contacts:
                     continue
                 
-                for id_j, resid2 in enumerate(self.unique_ids):
+                for id_j, resid2 in enumerate(self.unique_ids[id_i:], id_i):
                     b_neighbors = ag_ids[b] == resid2
                     b_neighboring_a = a_neighbors & b_neighbors
-                    unique_b_neighbors = set(ag.residues.resindices[b][b_neighboring_a])
-
-                    n_interactions = len(unique_b_neighbors)
                     res_res_row[id_i, id_j, fr_i] = n_ab = sum(b_neighboring_a)
 
                     local_ratio = n_ab / n_contacts
                     prob_b = sum(ag_ids == resid2) / n_tot
                     prob_a = n_res / n_tot
                     global_ratio = prob_a * prob_b
-                    self.timewise_cfraction[lf_i, id_i, id_j, fr_i] = local_ratio / global_ratio
+                    if global_ratio:
+                        self.timewise_cfraction[lf_i, id_i, id_j, fr_i] = local_ratio / global_ratio
 
     def _conclude(self):
         pass
