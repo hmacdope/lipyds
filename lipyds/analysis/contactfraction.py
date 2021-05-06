@@ -9,8 +9,9 @@ Classes
     :members:
 
 """
-
+import functools
 from typing import Union
+from collections import defaultdict
 
 import scipy
 import numpy as np
@@ -27,6 +28,7 @@ class ContactFraction(LeafletAnalysisBase):
                  **kwargs):
         super().__init__(universe, **kwargs)
         self.cutoff = cutoff
+        self.id_to_index = {x: i for i, x in enumerate(self.unique_ids)}
         
 
     def _prepare(self):
@@ -42,67 +44,99 @@ class ContactFraction(LeafletAnalysisBase):
     def _single_frame(self):
         fr_i = self._frame_index
         for lf_i in range(self.n_leaflets):
+            # grab slices we're modifying
+            res_n_contacts = self.residue_contact_counts[lf_i, :, fr_i]
+            res_counts = self.residue_counts[lf_i, :, fr_i]
+            res_res_contacts = self.residue_residue_contact_counts[lf_i, :, :, fr_i]
+            timewise_cfrac = self.timewise_cfraction[lf_i, :, :, fr_i]
+
             ag = self.leaflet_atomgroups[lf_i]
-            # coords = get_centers_by_residue(ag)
-            ag_ids = getattr(ag, self.group_by_attr)
-            ag_resix = ag.resindices
+
+            # num residues in leaflet
+            self.total_lipid_counts[lf_i, fr_i] = n_lipids = len(ag.residues)
+
+            resids = getattr(ag.residues, self.group_by_attr)
+            unique_resids, counts = np.unique(resids, return_counts=True)
+            for rid, count in zip(unique_resids, counts):
+                res_counts[self.id_to_index[rid]] = count
+
+            # get atom index neighbors
             a, b = distances.capped_distance(ag.positions, ag.positions,
                                              self.cutoff,
                                              box=self.get_box(),
                                              return_distances=False).T
-            not_self = a != b
-            a = a[not_self]
-            b = b[not_self]
+            a_atoms = ag[a]
+            b_atoms = ag[b]
 
-            not_same_res = []
-            seen = set()
-            for res_a, res_b in zip(ag_resix[a], ag_resix[b]):
-                pair = (res_a, res_b)
-                not_same_res.append(pair not in seen)
-                seen.add(pair)
+            # get residue neighbors
+            ab_resindices = set(x for x in zip(a_atoms.resindices, b_atoms.resindices) if x[0] != x[1])
+            a_resindices, b_resindices = map(list, zip(*ab_resindices))
             
-            a = a[not_same_res]
-            b = b[not_same_res]
-            self.total_lipid_counts[lf_i, fr_i] = len(ag.residues)
-            res_res_row = self.residue_residue_contact_counts[lf_i]
-            for id_i, resid in enumerate(self.unique_ids):
-                a_neighbors = ag_ids[a] == resid
-                n_contacts = len(set(ag.resindices[b][a_neighbors]))
-                self.residue_contact_counts[lf_i, id_i, fr_i] = n_contacts
-                self.residue_counts[lf_i, id_i, fr_i] = n_res = sum(ag_ids == resid)
-                if not n_res or not n_contacts:
-                    continue
-                
-                for id_j, resid2 in enumerate(self.unique_ids):
-                    b_neighbors = ag_ids[b] == resid2
-                    b_neighboring_a = a_neighbors & b_neighbors
-                    unique_b_neighbors = set(ag.resindices[b][b_neighboring_a])
-                    res_res_row[id_i, id_j, fr_i] = len(unique_b_neighbors)
+            a_residues = self.universe.residues[a_resindices]
+            b_residues = self.universe.residues[b_resindices]
 
-                    local_ratio = len(unique_b_neighbors) / n_contacts
-                    global_ratio = sum(ag_ids == resid2) / len(ag_ids)
-                    self.timewise_cfraction[lf_i, id_i, id_j, fr_i] = local_ratio / global_ratio
+            a_ids = getattr(a_residues, self.group_by_attr)
+            b_ids = getattr(b_residues, self.group_by_attr)
 
-    def _conclude(self):
-        self.contact_fraction_by_leaflet = np.ones((self.n_leaflets, self.n_unique_ids, self.n_unique_ids))
+            unique_a, a_counts = np.unique(a_ids, return_counts=True)
+            for a_id, count in zip(unique_a, a_counts):
+                res_n_contacts[self.id_to_index[a_id]] = count
 
-        n_specific_contacts = self.residue_residue_contact_counts.mean(axis=-1)
-        n_contacts = self.residue_contact_counts.mean(axis=-1)
-        n_residues = self.residue_counts.mean(axis=-1)
-        n_in_leaflet = self.total_lipid_counts.mean(axis=-1)
+            # sort into pairs
+            pair_counts = defaultdict(int)
+            # this map construction looks stupid but is ~10x faster than
+            # a for loop
+            def count_pairs(a, b):
+                pair_counts[(a, b)] += 1
+            list(map(count_pairs, a_ids, b_ids))
 
-        for lf_i in range(self.n_leaflets):
-            specific = n_specific_contacts[lf_i]
-            contacts = n_contacts[lf_i]
-            residues = n_residues[lf_i]
-            leaflet = n_in_leaflet[lf_i]
-            for i in range(self.n_unique_ids):
-                for j in range(self.n_unique_ids):
-                    local_ratio = specific[i, j] / contacts[j]
-                    global_ratio = residues[i] / leaflet
-                    if global_ratio:
+            n_contacts = sum(res_n_contacts)
 
-                        self.contact_fraction_by_leaflet[lf_i, i, j] = local_ratio/global_ratio
+            func = functools.partial(self._calculate_timewise_cfraction,
+                                     pair_counts=pair_counts,
+                                     res_n_contacts=res_n_contacts,
+                                     res_counts=res_counts,
+                                     res_res_contacts=res_res_contacts,
+                                     timewise_cfrac=timewise_cfrac,
+                                     n_interactions=len(a_resindices),
+                                     n_lipids=n_lipids)
+
+            list(map(func, range(self.n_unique_ids)))
+
+    def _calculate_timewise_cfraction(self, id_i, pair_counts={},
+                                      res_n_contacts=[], res_counts=[],
+                                      res_res_contacts=[], timewise_cfrac=[],
+                                      n_interactions=0, n_lipids=0):
+            def row(id_j):
+                resi, resj = self.unique_ids[[id_i, id_j]]
+                res_res_contacts[id_i, id_j] = n_ab = pair_counts[(resi, resj)]
+                local_ratio = n_ab / res_n_contacts[id_i]
+                global_ratio = res_counts[id_j] / n_lipids
+                timewise_cfrac[id_i, id_j] = local_ratio / global_ratio
+
+            list(map(row, range(self.n_unique_ids)))
+
+
+    # def _conclude(self):
+    #     self.contact_fraction_by_leaflet = np.ones((self.n_leaflets, self.n_unique_ids, self.n_unique_ids))
+
+    #     n_specific_contacts = self.residue_residue_contact_counts.mean(axis=-1)
+    #     n_contacts = self.residue_contact_counts.mean(axis=-1)
+    #     n_residues = self.residue_counts.mean(axis=-1)
+    #     n_in_leaflet = self.total_lipid_counts.mean(axis=-1)
+
+    #     for lf_i in range(self.n_leaflets):
+    #         specific = n_specific_contacts[lf_i]
+    #         contacts = n_contacts[lf_i]
+    #         residues = n_residues[lf_i]
+    #         leaflet = n_in_leaflet[lf_i]
+    #         for i in range(self.n_unique_ids):
+    #             for j in range(self.n_unique_ids):
+    #                 local_ratio = specific[i, j] / contacts[j]
+    #                 global_ratio = residues[i] / leaflet
+    #                 if global_ratio:
+
+    #                     self.contact_fraction_by_leaflet[lf_i, i, j] = local_ratio/global_ratio
 
 
     def collate_as_dataframe(self, ids=None):
@@ -155,7 +189,7 @@ class ContactFraction(LeafletAnalysisBase):
         dfs = [pd.DataFrame(d, columns=self.unique_ids)
                for d in means]
         for df in dfs:
-            df["Y"] = self.unique_ids
+            df.index = self.unique_ids
         
         if ids is not None:
             ids = list(ids)
@@ -175,62 +209,42 @@ class ContactFraction(LeafletAnalysisBase):
 
 class SymmetricContactFraction(ContactFraction):
 
-    def _prepare(self):
-        shape = (self.n_leaflets, self.n_unique_ids, self.n_unique_ids, self.n_frames)
-        shape2 = (self.n_leaflets, self.n_unique_ids, self.n_frames)
-        self.residue_residue_contact_counts = np.zeros(shape, dtype=int)
-        self.residue_contact_counts = np.zeros((self.n_leaflets, self.n_frames), dtype=int)
-        self.residue_counts = np.zeros(shape2, dtype=int)
-        self.total_lipid_counts = np.zeros((self.n_leaflets, self.n_frames), dtype=int)
-        self.timewise_cfraction = np.empty(shape)
-        self.timewise_cfraction[:] = np.nan
+    def _calculate_timewise_cfraction(self, id_i, pair_counts={},
+                                      res_n_contacts=[], res_counts=[],
+                                      res_res_contacts=[], timewise_cfrac=[],
+                                      n_interactions=0, n_lipids=0):
 
-    def _single_frame(self):
-        fr_i = self._frame_index
-        for lf_i in range(self.n_leaflets):
-            ag = self.leaflet_atomgroups[lf_i]
-            ag_ids = getattr(ag, self.group_by_attr)
-            ag_resix = ag.resindices
-            a, b = distances.capped_distance(ag.positions, ag.positions,
-                                             self.cutoff,
-                                             box=self.get_box(),
-                                             return_distances=False).T
-            not_self = a != b
-            a = a[not_self]
-            b = b[not_self]
+            ratios = res_counts / n_lipids
+            def row(id_j):
+                resi, resj = self.unique_ids[[id_i, id_j]]
+                n_ab = pair_counts[(resi, resj)]
+                res_res_contacts[id_i, id_j] = res_res_contacts[id_j, id_i] = n_ab
+                local_ratio = n_ab / n_interactions
+                global_ratio = ratios[id_i] * ratios[id_j]
+                cfrac = local_ratio / global_ratio
+                timewise_cfrac[id_i, id_j] = timewise_cfrac[id_j, id_i] = cfrac
 
-            not_same_res = []
-            seen = set()
-            for res_a, res_b in zip(ag_resix[a], ag_resix[b]):
-                pair = (res_a, res_b)
-                not_same_res.append(pair not in seen)
-                seen.add(pair)
-            
-            a = a[not_same_res]
-            b = b[not_same_res]
+            list(map(row, range(id_i, self.n_unique_ids)))
 
-            self.total_lipid_counts[lf_i, fr_i] = n_tot = len(ag.residues)
-            self.residue_contact_counts[lf_i, fr_i] = n_contacts = len(a)
+    
 
-            res_res_row = self.residue_residue_contact_counts[lf_i]
-            for id_i, resid in enumerate(self.unique_ids):
-                a_neighbors = ag_ids[a] == resid
-                
-                self.residue_counts[lf_i, id_i, fr_i] = n_res = sum(ag_ids == resid)
-                if not n_res or not n_contacts:
-                    continue
-                
-                for id_j, resid2 in enumerate(self.unique_ids[id_i:], id_i):
-                    b_neighbors = ag_ids[b] == resid2
-                    b_neighboring_a = a_neighbors & b_neighbors
-                    res_res_row[id_i, id_j, fr_i] = n_ab = sum(b_neighboring_a)
+    # def _conclude(self):
+    #     self.contact_fraction_by_leaflet = np.ones((self.n_leaflets, self.n_unique_ids, self.n_unique_ids))
 
-                    local_ratio = n_ab / n_contacts
-                    prob_b = sum(ag_ids == resid2) / n_tot
-                    prob_a = n_res / n_tot
-                    global_ratio = prob_a * prob_b
-                    if global_ratio:
-                        self.timewise_cfraction[lf_i, id_i, id_j, fr_i] = local_ratio / global_ratio
+    #     n_specific_contacts = self.residue_residue_contact_counts.mean(axis=-1)
+    #     n_contacts = self.residue_contact_counts.mean(axis=-1)
+    #     n_residues = self.residue_counts.mean(axis=-1)
+    #     n_in_leaflet = self.total_lipid_counts.mean(axis=-1)
 
-    def _conclude(self):
-        pass
+    #     for lf_i in range(self.n_leaflets):
+    #         specific = n_specific_contacts[lf_i]
+    #         contacts = n_contacts[lf_i]
+    #         residues = n_residues[lf_i]
+    #         leaflet = n_in_leaflet[lf_i]
+    #         for i in range(self.n_unique_ids):
+    #             for j in range(self.n_unique_ids):
+    #                 local_ratio = specific[i, j] / contacts[j]
+    #                 global_ratio = residues[i] / leaflet
+    #                 if global_ratio:
+
+    #                     self.contact_fraction_by_leaflet[lf_i, i, j] = local_ratio/global_ratio
