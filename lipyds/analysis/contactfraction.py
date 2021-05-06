@@ -193,10 +193,9 @@ class ContactFraction(LeafletAnalysisBase):
         
         if ids is not None:
             ids = list(ids)
-            dfs = [df[df.Y.isin(ids)] for df in dfs]
+            dfs = [df[df.index.isin(ids)] for df in dfs]
             rows = []
             for df in dfs:
-                df = df.set_index("Y")
                 df = df.reindex(ids)
                 rows.append(df)
             dfs = [df[ids] for df in rows]
